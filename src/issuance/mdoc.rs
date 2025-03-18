@@ -446,7 +446,12 @@ fn digest_namespace(
 fn generate_digest_id(used_ids: &mut HashSet<DigestId>) -> DigestId {
     let mut digest_id;
     loop {
-        digest_id = DigestId::new(rand::thread_rng().gen());
+        // Generate a random byte to use as the digest ID
+        // NOTE: this is modified from the upstream code
+        // which was using a random i32. Crescent is currently
+        // limited to using a single byte for the digest ID.
+        let random_byte = rand::thread_rng().gen::<u8>();
+        digest_id = DigestId::new(random_byte as i32);
         if used_ids.insert(digest_id) {
             break;
         }
