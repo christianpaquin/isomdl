@@ -369,12 +369,28 @@ fn to_issuer_namespaces(namespaces: Namespaces) -> Result<IssuerNamespaces> {
         })
 }
 
+// Crescent note: rewrote this function to limit the number of elements to 23
+// per namespace so they can be encoded in a single CBOR byte (current assumption
+// in Crescent).
 fn to_issuer_signed_items(
     elements: BTreeMap<String, ciborium::Value>,
 ) -> impl Iterator<Item = IssuerSignedItem> {
-    let mut used_ids = HashSet::new();
+    // Ensure we have fewer than 24 elements.
+    if elements.len() >= 24 {
+        panic!(
+            "Too many elements ({}): Maximum allowed is 23.",
+            elements.len()
+        );
+    }
+
+    // Create a vector of available DigestIds from 0 to 23.
+    let mut available_ids: Vec<DigestId> = (0..24).map(|i| DigestId::new(i)).collect();
+
     elements.into_iter().map(move |(key, value)| {
-        let digest_id = generate_digest_id(&mut used_ids);
+        // Inline digest ID generation: randomly pick an index, remove that DigestId, and assign it.
+        let index = rand::thread_rng().gen_range(0..available_ids.len());
+        let digest_id = available_ids.swap_remove(index);
+        println!("Generated digestID for key: {:?}, digestID {:?}", key, digest_id); // FIXME: delete
         let random = Vec::from(rand::thread_rng().gen::<[u8; 16]>()).into();
         IssuerSignedItem {
             digest_id,
@@ -401,37 +417,18 @@ fn digest_namespaces(
         .collect()
 }
 
+// Crescent note: rewrote this function since we are limiting the number of
+// elements to 23 per namespace
 fn digest_namespace(
     elements: &[IssuerSignedItemBytes],
     digest_algorithm: DigestAlgorithm,
-    enable_decoy_digests: bool,
+    _enable_decoy_digests: bool,
 ) -> Result<DigestIds> {
-    let mut used_ids = elements
-        .iter()
-        .map(|item| item.as_ref().digest_id)
-        .collect();
-
-    // Generate X random digests to avoid leaking information.
-    let random_ids = std::iter::repeat_with(|| generate_digest_id(&mut used_ids));
-    let random_bytes = std::iter::repeat_with(|| {
-        std::iter::repeat_with(|| rand::thread_rng().gen::<u8>())
-            .take(512)
-            .collect()
-    });
-    let random_digests = random_ids
-        .zip(random_bytes)
-        .map(Result::<_, anyhow::Error>::Ok)
-        .take(if enable_decoy_digests {
-            rand::thread_rng().gen_range(5..10)
-        } else {
-            0
-        });
-
     elements
         .iter()
         .map(|item| Ok((item.as_ref().digest_id, crate::cbor::to_vec(item)?)))
-        .chain(random_digests)
-        .map(|result| {
+//        .chain(random_digests) // Commented for Crescent, limiting the number of attributes
+        .map(|result: Result<(DigestId, Vec<u8>), anyhow::Error>| {
             let (digest_id, bytes) = result?;
             let digest = match digest_algorithm {
                 DigestAlgorithm::SHA256 => Sha256::digest(bytes).to_vec(),
@@ -441,22 +438,6 @@ fn digest_namespace(
             Ok((digest_id, digest.into()))
         })
         .collect()
-}
-
-fn generate_digest_id(used_ids: &mut HashSet<DigestId>) -> DigestId {
-    let mut digest_id;
-    loop {
-        // Generate a random byte to use as the digest ID
-        // NOTE: this is modified from the upstream code
-        // which was using a random i32. Crescent is currently
-        // limited to using a single byte for the digest ID.
-        let random_byte = rand::thread_rng().gen::<u8>();
-        digest_id = DigestId::new(random_byte as i32);
-        if used_ids.insert(digest_id) {
-            break;
-        }
-    }
-    digest_id
 }
 
 #[cfg(test)]
